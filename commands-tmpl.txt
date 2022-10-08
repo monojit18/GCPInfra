@@ -410,8 +410,8 @@ Return to the web browser tab in which you opened your bloghost VM instance's ex
 
 VARIABLES
 ===========
-GSA=gke-infra-sa@infra-project-3108451.iam.gserviceaccount.com
-PROJECTID=infra-project-3108451
+GSA=
+PROJECTID=
 
 Service account
 ===================
