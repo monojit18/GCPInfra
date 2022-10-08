@@ -1,0 +1,549 @@
+Infra
+======
+gcloud compute networks create infra-default --subnet-mode=custom --bgp-routing-mode=regional --mtu=1460
+# gcloud compute networks delete infra-default
+
+gcloud compute networks subnets create infra-default-subnet --network=infra-default --range=10.0.0.0/24 --region=us-east1
+# gcloud compute networks subnets delete infra-default-subnet --region=us-east1
+
+gcloud compute instance-templates create template-with-startup --network=infra-default --subnet=infra-default-subnet \
+    --region=us-east1 --shielded-secure-boot \
+    --metadata startup-script='#! /bin/bash
+    apt-get update
+    apt -y install apache2
+    cat <<EOF > /var/www/html/index.html<html><body><p>$HOSTNAME.</p></body></html>EOF'
+# gcloud compute instance-templates delete template-with-startup --region=us-east1
+
+# gcloud compute instance-templates delete template-with-startup
+
+gcloud compute instance-groups managed create mig-16092302 --size=2 --template=template-with-startup --zone=us-east1-b
+gcloud compute instance-groups managed list-instances mig-16092302 --zone=us-east1-b
+gcloud compute ssh --zone=us-east1-b <instance-name-1>
+gcloud compute ssh --zone=us-east1-b <instance-name-2>
+# gcloud compute instance-groups managed delete mig-16092302 --zone=us-east1-b
+
+gcloud compute firewall-rules create fw-16092322 --network=infra-default --allow=tcp:80,tcp:22 --source-ranges=0.0.0.0/0
+# gcloud compute firewall-rules delete fw-16092322
+
+Target Pool Approach
+=========================
+gcloud compute http-health-checks create basic-check
+# gcloud compute http-health-checks delete basic-check
+
+gcloud compute target-pools create target-pool-16092320 --region=us-east1
+# gcloud compute target-pools add-instances target-pool-16092320 --instances=mig-16092302-lmvc,mig-16092302-z7db --instances-zone=us-east1-b
+# gcloud compute target-pools delete target-pool-16092320 --region=us-east1
+
+gcloud compute target-pools add-health-checks target-pool-16092320 --http-health-check=basic-check --region=us-east1
+gcloud compute instance-groups managed set-target-pools mig-16092302 --target-pools=target-pool-16092320 --zone=us-east1-b
+
+gcloud compute addresses create lb-ip-16092323 --region us-east1
+gcloud compute addresses describe lb-ip-16092323 --region us-east1
+# gcloud compute addresses delete lb-ip-16092323 --region us-east1
+
+gcloud compute forwarding-rules create fwd-rule-16092326 --region=us-east1 --ports=80 --address=lb-ip-16092323 \
+--target-pool=target-pool-16092320
+# gcloud compute forwarding-rules delete fwd-rule-16092326 --region=us-east1
+
+MIG Approach
+================
+gcloud compute instance-groups managed set-autoscaling mig-16092302 --max-num-replicas=8 --schedule-min-required-replicas=2 \
+--zone=us-east1-b
+
+gcloud compute health-checks create tcp basic-check --region=us-east1 --port=80
+# gcloud compute health-checks delete basic-check --region=us-east1
+
+gcloud compute addresses create lb-ip-16092323 --region us-east1
+gcloud compute addresses describe lb-ip-16092323 --region us-east1
+# gcloud compute addresses delete lb-ip-16092323 --region us-east1
+
+gcloud compute backend-services create network-lb-backend-service --protocol=TCP \
+    --health-checks=basic-check --health-checks-region=us-east1 --region=us-east1
+# gcloud compute backend-services delete network-lb-backend-service --region=us-east1
+
+gcloud compute backend-services add-backend network-lb-backend-service \
+--instance-group=mig-16092302 --instance-group-zone=us-east1-b --region=us-east1
+
+gcloud compute forwarding-rules create network-lb-forwarding-rule-ipv4 \
+  --load-balancing-scheme=EXTERNAL \
+  --region=us-east1 --ports=80 --address=lb-ip-16092323 --backend-service=network-lb-backend-service
+# gcloud compute forwarding-rules delete network-lb-forwarding-rule-ipv4 --region=us-east1
+
+TEST
+=====
+while true; do curl -m1 34.138.45.9; done
+
+MIG with HTTP(S) LB
+=====================
+gcloud compute instance-groups managed create mig-17091541 --size=2 --template=template-with-startup --zone=us-east1-b
+gcloud compute instance-groups managed list-instances mig-17091541 --zone=us-east1-b
+gcloud compute ssh --zone=us-east1-b <instance-name-1>
+gcloud compute ssh --zone=us-east1-b <instance-name-2>
+# gcloud compute instance-groups managed delete mig-16092302 --zone=us-east1-b
+
+
+gcloud compute addresses create lb-ip-17091517  --global
+gcloud compute addresses describe lb-ip-17091517  --global
+# gcloud compute addresses delete lb-ip-17091517  --global
+
+gcloud compute firewall-rules create fw-allow-health-check \
+  --network=infra-default --action=allow --direction=ingress \
+  --source-ranges=130.211.0.0/22,35.191.0.0/16 --source-ranges=0.0.0.0/0 --rules=tcp:80
+
+gcloud compute health-checks create http http-basic-check --port 80
+# gcloud compute health-checks delete http-basic-check
+
+gcloud compute backend-services create web-backend-service \
+--protocol=HTTP --port-name=http --health-checks=http-basic-check --global
+# gcloud compute backend-services delete web-backend-service --global
+
+gcloud compute backend-services add-backend web-backend-service \
+--instance-group=mig-17091541 --instance-group-zone=us-east1-b --global
+
+gcloud compute url-maps create web-map-http --default-service web-backend-service
+# gcloud compute url-maps delete web-map-http
+
+gcloud compute target-http-proxies create http-lb-proxy --url-map web-map-http
+# gcloud compute target-http-proxies delete http-lb-proxy
+
+gcloud compute forwarding-rules create http-content-rule \
+    --address=lb-ip-17091517 --target-http-proxy=http-lb-proxy --ports=80 --global 
+# gcloud compute forwarding-rules delete http-content-rule --global
+
+TEST
+=====
+while true; do curl -m1 34.120.110.16; done
+
+## Jump Server
+================
+gcloud compute instances create jump-server --image-family=debian-10 --image-project=debian-cloud --tags=jump-server \
+--network=infra-default --subnet=infra-default-subnet --zone=us-east1-b --shielded-secure-boot
+# gcloud compute instances delete jump-server --zone=asia-southeast1-b
+
+gcloud compute ssh --zone=us-east1-b jump-server
+
+================================================================================================
+Create and Manage Cloud Resources: Challenge Lab
+====================================================
+
+student-01-e37bb34aa32c@qwiklabs.net
+UI6N9XS5JBOJ
+qwiklabs-gcp-01-cc4c35112811
+nucleus-jumphost-544
+8082
+permit-tcp-rule-974
+
+gcloud compute instances create nucleus-jumphost-544 --project=qwiklabs-gcp-01-cc4c35112811 \
+--zone=us-east1-b --machine-type=f1-micro
+
+gcloud container clusters create ch-lab-cluster --zone=us-east1-b
+gcloud container clusters get-credentials ch-lab-cluster --zone=us-east1-b
+
+kubectl create deployment hello-app --image=gcr.io/google-samples/hello-app:2.0
+kubectl expose deploy/hello-app --name hello-svc --port=8082 --type=LoadBalancer
+
+# gcloud container clusters delete ch2-lab-cluster --zone=us-east1-b
+
+cat << EOF > startup.sh
+#! /bin/bash
+apt-get update
+apt-get install -y nginx
+service nginx start
+sed -i -- 's/nginx/Google Cloud Platform - '"\$HOSTNAME"'/' /var/www/html/index.nginx-debian.html
+EOF
+
+gcloud compute instance-templates create template-with-startup \
+    --network=nucleus-vpc --subnet=nucleus-vpc \
+    --region=us-east1 --shielded-secure-boot \
+    --metadata-from-file startup-script=startup.sh
+# gcloud compute instance-templates delete template-with-startup
+
+gcloud compute instance-groups managed create mig-19090130 --size=2 --template=template-with-startup --zone=us-east1-b
+# gcloud compute instance-groups managed delete mig-19090130 --zone=us-east1-b
+
+gcloud compute instance-groups managed list-instances mig-19090130 --zone=us-east1-b
+gcloud compute instance-groups managed set-autoscaling mig-19090130 --max-num-replicas=8 --schedule-min-required-replicas=2 \
+--zone=us-east1-b
+
+# gcloud compute target-pools create target-pool-19090130 --region=us-east1
+
+gcloud compute addresses create lb-ip-19090130  --global
+gcloud compute addresses describe lb-ip-19090130  --global
+
+gcloud compute firewall-rules create permit-tcp-rule-974 \
+  --action=allow --direction=ingress \
+  --source-ranges=0.0.0.0/0 --network nucleus-vpc --rules=tcp:80
+
+gcloud compute health-checks create http http-basic-check --port 80
+# gcloud compute health-checks delete http http-basic-check
+
+gcloud compute instance-groups managed set-named-ports mig-19090130 --named-ports http:80 --zone us-east1-b
+
+gcloud compute backend-services create web-backend-service \
+--protocol=HTTP --port-name=http --health-checks=http-basic-check --global
+# gcloud compute backend-services delete web-backend-service --global
+
+gcloud compute backend-services add-backend web-backend-service \
+--instance-group=mig-19090130 --instance-group-zone=us-east1-b --global
+
+gcloud compute url-maps create web-map-http --default-service web-backend-service
+# gcloud compute url-maps delete web-map-http
+
+gcloud compute target-http-proxies create http-lb-proxy --url-map web-map-http
+# gcloud compute target-http-proxies delete http-lb-proxy
+
+gcloud compute forwarding-rules create http-content-rule --target-http-proxy=http-lb-proxy --ports=80 --global 
+# gcloud compute forwarding-rules delete http-content-rule --global 
+gcloud compute forwarding-rules list
+
+================================================================================================
+Getting Started with Cloud Storage and Cloud SQL: Challenge Lab
+====================================================
+
+student-01-42a7d83c2518@qwiklabs.net
+GSSpnYmOv4jq
+qwiklabs-gcp-00-d44dc82a72d2
+us-central1
+us-central1-a
+=========================================
+In the GCP Console, on the Navigation menu (Navigation menu icon), click Compute Engine > VM instances.
+
+Click Create Instance.
+
+On the Create an Instance page, for Name, type bloghost
+
+For Region and Zone, select the region and zone assigned by Qwiklabs.
+
+For Machine type, accept the default.
+
+For Boot disk, if the Image shown is not Debian GNU/Linux 11 (bullseye), click Change and select Debian GNU/Linux 11 (bullseye).
+
+Leave the defaults for Identity and API access unmodified.
+
+For Firewall, click Allow HTTP traffic.
+
+Click Networking, disks, security, management, sole tenancy to open that section of the dialog.
+
+Click Management to open that section of the dialog.
+
+Scroll down to the Automation section, and enter the following script as the value for Startup script:
+apt-get update
+apt-get install apache2 php php-mysql -y
+service apache2 restart
+
+Leave the remaining settings as their defaults, and click Create.
+Note: Instance can take about two minutes to launch and be fully available for use.
+On the VM instances page, copy the bloghost VM instance's internal and external IP addresses to a text editor for use later in this lab.
+10.128.0.2
+35.194.10.27
+
+==================================================================================
+Task 3. Create a Cloud Storage bucket using the gsutil command line
+On the Google Cloud Platform menu, click Activate Cloud Shell Activate Cloud Shell icon. If a dialog box appears, click Continue.
+
+For convenience, enter your chosen location into an environment variable called LOCATION. Enter one of these commands:
+export LOCATION=US
+
+In Cloud Shell, the DEVSHELL_PROJECT_ID environment variable contains your project ID. Enter this command to make a bucket named after your project ID:
+gsutil mb -l $LOCATION gs://$DEVSHELL_PROJECT_ID
+
+If prompted, click Authorize to continue.
+
+Retrieve a banner image from a publicly accessible Cloud Storage location:
+gsutil cp gs://cloud-training/gcpfci/my-excellent-blog.png my-excellent-blog.png
+
+Copy the banner image to your newly created Cloud Storage bucket:
+gsutil cp my-excellent-blog.png gs://$DEVSHELL_PROJECT_ID/my-excellent-blog.png
+
+Modify the Access Control List of the object you just created so that it is readable by everyone:
+gsutil acl ch -u allUsers:R gs://$DEVSHELL_PROJECT_ID/my-excellent-blog.png
+==================================================================================
+
+Task 4. Create the Cloud SQL instance
+===============================================
+
+In the GCP Console, on the Navigation menu (Navigation menu icon), click SQL.
+
+Click Create instance.
+
+For Choose a database engine, select MySQL.
+
+For Instance ID, type blog-db, and for Root password type a password of your choice.
+
+Note: Choose a password that you remember. There's no need to obscure the password because you'll use mechanisms to connect that aren't open access to everyone.
+Select Single zone and set the region and zone assigned by Qwiklabs.
+Note: This is the same region and zone into which you launched the bloghost instance. The best performance is achieved by placing the client and the database close to each other.
+Click Create Instance.
+Note: Wait for the instance to finish deploying. It will take a few minutes.
+Click on the name of the instance, blog-db, to open its details page.
+
+From the SQL instances details page, copy the Public IP address for your SQL instance to a text editor for use later in this lab.
+34.134.238.242
+
+Click on Users menu on the left-hand side, and then click ADD USER ACCOUNT.
+
+For User name, type blogdbuser
+
+For Password, type a password of your choice. Make a note of it.
+
+Click ADD to add the user account in the database.
+
+Note: Wait for the user to be created.
+Click the Connections tab, and then click Add network.
+Note: If you are offered the choice between a Private IP connection and a Public IP connection, choose Public IP for purposes of this lab.
+Note: The Add network button may be grayed out if the user account creation is not yet complete.
+For Name, type web front end
+
+For Network, type the external IP address of your bloghost VM instance, followed by /32
+
+The result will look like this:
+
+35.194.10.27/32
+Note: Be sure to use the external IP address of your VM instance followed by /32. Do not use the VM instance's internal IP address. Do not use the sample IP address shown here.
+Click Done to finish defining the authorized network.
+
+Click Save to save the configuration change.
+
+Note: If the message appears like Another operation is in progress, wait for few minutes until you see the green check for blog-db to save the configuration.
+
+Task 5. Configure an application in a Compute Engine instance to use Cloud SQL
+==============================================================================================
+On the Navigation menu (Navigation menu icon), click Compute Engine > VM instances.
+
+In the VM instances list, click SSH in the row for your VM instance bloghost.
+
+In your ssh session on bloghost, change your working directory to the document root of the web server:
+
+cd /var/www/html
+Copied!
+Use the nano text editor to edit a file called index.php:
+
+sudo nano index.php
+Copied!
+Paste the content below into the file:
+
+<html>
+<head><title>Welcome to my excellent blog</title></head>
+<body>
+<h1>Welcome to my excellent blog</h1>
+Copied!
+Note: In a later step, you will insert your Cloud SQL instance's IP address and your database password into this file. For now, leave the file unmodified.
+Press Ctrl+O, and then press Enter to save your edited file.
+
+Press Ctrl+X to exit the nano text editor.
+
+Restart the web server:
+
+sudo service apache2 restart
+Copied!
+Open a new web browser tab and paste into the address bar your bloghost VM instance's external IP address followed by /index.php. The URL will look like this:
+
+35.192.208.2/index.php
+Copied!
+Note: Be sure to use the external IP address of your VM instance followed by /index.php. Do not use the VM instance's internal IP address. Do not use the sample IP address shown here.
+When you load the page, you will see that its content includes an error message beginning with the words:
+
+Database connection failed: ...
+Note: This message occurs because you have not yet configured PHP's connection to your Cloud SQL instance.
+Return to your ssh session on bloghost. Use the nano text editor to edit index.php again.
+sudo nano index.php
+Copied!
+In the nano text editor, replace CLOUDSQLIP with the Cloud SQL instance Public IP address that you noted above. Leave the quotation marks around the value in place.
+
+In the nano text editor, replace DBPASSWORD with the Cloud SQL database password that you defined above. Leave the quotation marks around the value in place.
+
+Press Ctrl+O, and then press Enter to save your edited file.
+
+Press Ctrl+X to exit the nano text editor.
+
+Restart the web server:
+
+sudo service apache2 restart
+Copied!
+Return to the web browser tab in which you opened your bloghost VM instance's external IP address. When you load the page, the following message appears:
+Database connection succeeded.
+Note: In an actual blog, the database connection status would not be visible to blog visitors. Instead, the database connection would be managed solely by the administrator.
+
+<img src='https://storage.googleapis.com/qwiklabs-gcp-00-d44dc82a72d2/my-excellent-blog.png'>
+
+Task 6. Configure an application in a Compute Engine instance to use a Cloud Storage object
+==============================================================================================
+In the GCP Console, click Cloud Storage > Browser.
+
+Click on the bucket that is named after your GCP project.
+
+In this bucket, there is an object called my-excellent-blog.png. Copy the URL behind the link icon that appears in that object's Public access column, or behind the words "Public link" if shown.
+
+Note: If you see neither a link icon nor a "Public link", try refreshing the browser. If you still do not see a link icon, return to Cloud Shell and confirm that your attempt to change the object's Access Control list with the gsutil acl ch command was successful.
+Return to your ssh session on your bloghost VM instance.
+
+Enter this command to set your working directory to the document root of the web server:
+
+cd /var/www/html
+Copied!
+Use the nano text editor to edit index.php:
+
+sudo nano index.php
+Copied!
+Use the arrow keys to move the cursor to the line that contains the h1 element. Press Enter to open up a new, blank screen line, and then paste the URL you copied earlier into the line.
+
+Paste this HTML markup immediately before the URL:
+
+<img src='
+Place a closing single quotation mark and a closing angle bracket at the end of the URL:
+'>
+The resulting line will look like this:
+
+ <img src='https://storage.googleapis.com/qwiklabs-gcp-0005e186fa559a09/my-excellent-blog.png'>
+The effect of these steps is to place the line containing <img src='...'> immediately before the line containing <h1>...</h1>
+
+Note: Do not copy the URL shown here. Instead, copy the URL shown by the Storage browser in your own Cloud Platform project.
+Press Ctrl+O, and then press Enter to save your edited file.
+
+Press Ctrl+X to exit the nano text editor.
+
+Restart the web server:
+
+sudo service apache2 restart
+Copied!
+Return to the web browser tab in which you opened your bloghost VM instance's external IP address. When you load the page, its content now includes a banner image.
+
+VARIABLES
+===========
+GSA=gke-infra-sa@infra-project-3108451.iam.gserviceaccount.com
+PROJECTID=infra-project-3108451
+
+Service account
+===================
+gcloud iam service-accounts keys create ./gke-infra-sa.key --iam-account=$GSA
+gcloud iam act
+
+================================================================================================
+Anthos Service Mesh (UI)
+====================================================
+gcloud container clusters list
+gcloud container cluster get-credentials cluster-1 --project=$PROJECTID
+
+k create deploy nginx-deploy --image=nginx
+# k delete deploy nginx-deploy
+
+k expose deploy nginx-deploy --name nginx-svc --type=LoadBalancer --port=80
+# k delete svc nginx-svc
+
+kubectl -n istio-system get controlplanerevision
+kubectl label namespace default istio-injection- istio.io/rev=asm-managed --overwrite
+kubectl annotate --overwrite namespace default mesh.cloud.google.com/proxy='{"managed":"true"}'
+
+k apply -f ../../GKE/anthos-service-mesh-packages/samples/gateways/istio-ingressgateway
+
+Anthos Service Mesh (CLI)
+====================================================
+gcloud iam service-accounts create gke-infra-sa
+gcloud projects add-iam-policy-binding $PROJECTID --member=serviceAccount:$GSA --role=roles/owner
+
+gcloud container clusters create gke-asm-cluster \
+    --project=$PROJECTID \
+    --zone=us-east1-b \
+    --network=infra-default --subnetwork=infra-default-gke-subnet \
+    --machine-type=e2-standard-4 \
+    --num-nodes=2 \
+    --enable-shielded-nodes --shielded-secure-boot --shielded-integrity-monitoring \
+    --service-account $GSA \
+    --workload-pool=$PROJECTID.svc.id.goog
+# gcloud container clusters delete gke-asm-cluster --project=$PROJECTID
+
+gcloud container clusters get-credentials gke-asm-cluster --project=$PROJECTID
+
+kubectl create serviceaccount gke-k8s-sa --namespace default
+
+gcloud iam service-accounts add-iam-policy-binding $GSA \
+    --role roles/iam.workloadIdentityUser \
+    --member "serviceAccount:$PROJECTID.svc.id.goog[default/gke-k8s-sa]"
+
+kubectl annotate serviceaccount gke-k8s-sa --namespace default \
+    iam.gke.io/gcp-service-account=$GSA
+
+k apply -f ../Apps/nginx-deploy.yaml
+k exec -it po/<pod-name> -- bash
+curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email
+
+/*gcloud container clusters update gke-asm-cluster --zone us-east1-b \
+      --update-labels mesh_id=proj-$PROJECTID*/
+
+curl https://storage.googleapis.com/csm-artifacts/asm/asmcli_1.14 > asmcli
+chmod +x asmcli
+
+/*
+./asmcli install \
+  --project_id $PROJECTID \
+  --cluster_name gke-asm-cluster \
+  --cluster_location us-east1-b \
+  --fleet_id $PROJECTID \
+  --enable_all \
+  --ca mesh_ca
+*/
+
+ISTIO_PATH=/Users/monojitdatta/Workloads/Development/Projects/GCP-Projects/GKE/anthos-service-mesh-packages/
+k create ns istio-gw-ns
+k label namespace istio-gw-ns istio-injection=enabled
+k apply -n istio-gw-ns -f $ISTIO_PATH/samples/gateways/istio-ingressgateway
+
+k apply -f $ISTIO_PATH/samples/online-boutique/kubernetes-manifests/namespaces
+for ns in ad cart checkout currency email frontend loadgenerator payment product-catalog recommendation shipping; do
+  k label namespace $ns istio-injection=enabled
+done;
+k apply -f $ISTIO_PATH/samples/online-boutique/kubernetes-manifests/deployments
+k apply -f $ISTIO_PATH/samples/online-boutique/kubernetes-manifests/services
+k apply -f $ISTIO_PATH/samples/online-boutique/istio-manifests/allow-egress-googleapis.yaml
+k apply -f $ISTIO_PATH/samples/online-boutique/istio-manifests/frontend-gateway.yaml
+
+Artifact Registry
+====================================================
+gcloud projects add-iam-policy-binding $PROJECTID \
+--member="serviceAccount:$GSA" \
+--role="roles/artifactregistry.repoAdmin"
+
+gcloud artifacts repositories create gke-docker-repo --repository-format=docker \
+--location=us-east1 --description="Docker repository"
+
+gcloud artifacts repositories list
+gcloud auth configure-docker us-east1-docker.pkg.dev
+
+docker pull us-docker.pkg.dev/google-samples/containers/gke/hello-app:1.0
+docker tag us-docker.pkg.dev/google-samples/containers/gke/hello-app:1.0 \
+us-east1-docker.pkg.dev/$PROJECTID/gke-docker-repo/quickstart-image:v1.0
+
+docker push us-east1-docker.pkg.dev/$PROJECTID/gke-docker-repo/quickstart-image:v1.0
+
+
+gcloud compute routers create gke-egress-router --network=infra-default --region=us-east1
+
+gcloud compute addresses create gke-nat-ip
+gcloud compute addresses describe gke-nat-ip
+
+gcloud compute routers nats create gke-egress-ngw --router=gke-egress-router \
+--nat-custom-subnet-ip-ranges=infra-default-gke-subnet --nat-external-ip-pool=gke-nat-ip
+# gcloud compute routers nats delete gke-egress-ngw --router=gke-egress-router
+
+gcloud compute routers nats describe gke-egress-ngw --router=gke-egress-router
+
+
+kubectl get daemonsets/ip-masq-agent -n kube-system
+kubectl describe configmaps/ip-masq-agent -n kube-system
+
+kubectl create configmap ip-masq-agent --namespace=kube-system --from-file=config="../IPMasq/ipmasq-cm.yaml"
+kubectl describe configmaps/ip-masq-agent -n kube-system
+k apply -f ../IPMasq/ipmasq-ds.yaml
+
+sudo iptables -t NAT -L IP-MASQ
+
+
+CICD
+=====
+chmod +x quickstart.sh
+gcloud artifacts repositories list
+gcloud artifacts repositories describe gke-docker-repo --location=us-east1
+gcloud builds submit --region=us-east1 --project=$PROJECTID --config=cloudbuild.yaml
+
+go install github.com/GoogleCloudPlatform/cloud-builders/gke-deploy
+gke-deploy -h

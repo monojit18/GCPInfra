@@ -1,0 +1,13 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'Build'
+  args: [ 'build', '-t', 'us-east1-docker.pkg.dev/$PROJECTID/gke-docker-repo/quickstart-image:v1.0', '.' ]
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'Push'
+  args: [ 'push', 'us-east1-docker.pkg.dev/$PROJECTID/gke-docker-repo/quickstart-image:v1.0']
+- name: 'gcr.io/cloud-builders/gke-deploy'
+  args:
+  - run
+  - --filename=quick-start-deploy.yaml
+  - --location=us-east1-b
+  - --cluster=gke-asm-cluster

@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:  
+  labels:
+    app: quick-start-deploy
+  name: quick-start-deploy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quick-start-deploy  
+  template:
+    metadata:      
+      labels:
+        app: quick-start-deploy
+    spec:
+      containers:
+      - image: us-east1-docker.pkg.dev/$PROJECTID/gke-docker-repo/quickstart-image:v1.0
+        name: quick-start
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+          limits:
+            cpu: 200m
+            memory: 200Mi          
+      serviceAccount: gke-k8s-sa
